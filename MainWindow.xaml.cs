@@ -4,6 +4,9 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Media.Animation;
 using TaskbarOverlay.Models;
 using TaskbarOverlay.Interop;
@@ -60,6 +63,15 @@ namespace TaskbarOverlay
                     });
                 }
 
+                // Extract icons
+                foreach (var group in _config.Groups)
+                {
+                    foreach (var app in group.Apps)
+                    {
+                        app.IconSource = ExtractIconFromPath(app.Path);
+                    }
+                }
+
                 GroupsItemsControl.ItemsSource = _config.Groups;
                 TaskbarPanel.Height = _config.Layout.Height;
             }
@@ -68,6 +80,58 @@ namespace TaskbarOverlay
                 MessageBox.Show($"Failed to load configuration: {ex.Message}");
                 _config = new Config();
             }
+        }
+
+        private ImageSource? ExtractIconFromPath(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(path))
+                {
+                    // Fallback to searching in PATH if not a full path
+                    string fullPath = path;
+                    if (!Path.IsPathRooted(path) && !File.Exists(path))
+                    {
+                        var values = Environment.GetEnvironmentVariable("PATH");
+                        if (values != null)
+                        {
+                            foreach (var pathDir in values.Split(Path.PathSeparator))
+                            {
+                                var testPath = Path.Combine(pathDir, path);
+                                if (File.Exists(testPath))
+                                {
+                                    fullPath = testPath;
+                                    break;
+                                }
+                                if (File.Exists(testPath + ".exe"))
+                                {
+                                    fullPath = testPath + ".exe";
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (File.Exists(fullPath))
+                    {
+                        using (var sysIcon = System.Drawing.Icon.ExtractAssociatedIcon(fullPath))
+                        {
+                            if (sysIcon != null)
+                            {
+                                return Imaging.CreateBitmapSourceFromHIcon(
+                                    sysIcon.Handle,
+                                    Int32Rect.Empty,
+                                    BitmapSizeOptions.FromEmptyOptions());
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore extraction errors
+            }
+            return null;
         }
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -138,6 +202,9 @@ namespace TaskbarOverlay
             if (sender is Button button && button.DataContext is GroupConfig group)
             {
                 PopupTitle.Text = group.Name;
+                // Sort apps by usage frequency (LaunchCount descending)
+                group.Apps.Sort((a, b) => b.LaunchCount.CompareTo(a.LaunchCount));
+                PopupItemsControl.ItemsSource = null; // force refresh
                 PopupItemsControl.ItemsSource = group.Apps;
                 ShowPopup();
             }
@@ -154,6 +221,10 @@ namespace TaskbarOverlay
                         FileName = app.Path,
                         UseShellExecute = true
                     });
+
+                    // Increment LaunchCount and save config
+                    app.LaunchCount++;
+                    SaveConfig();
                 }
                 catch (Exception ex)
                 {
@@ -163,6 +234,21 @@ namespace TaskbarOverlay
                 {
                     HidePopup();
                 }
+            }
+        }
+
+        private void SaveConfig()
+        {
+            try
+            {
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                string json = JsonSerializer.Serialize(_config, options);
+                File.WriteAllText("config.json", json);
+            }
+            catch (Exception ex)
+            {
+                // Ignore save errors silently
+                Debug.WriteLine($"Failed to save config: {ex.Message}");
             }
         }
 

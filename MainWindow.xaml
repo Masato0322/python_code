@@ -18,16 +18,16 @@
         <Storyboard x:Key="ShowPopupStoryboard">
             <DoubleAnimation Storyboard.TargetName="PopupTransform"
                              Storyboard.TargetProperty="ScaleY"
-                             From="0" To="1" Duration="0:0:0.2">
+                             From="0.8" To="1" Duration="0:0:0.3">
                 <DoubleAnimation.EasingFunction>
-                    <CubicEase EasingMode="EaseOut" />
+                    <BackEase EasingMode="EaseOut" Amplitude="0.5" />
                 </DoubleAnimation.EasingFunction>
             </DoubleAnimation>
             <DoubleAnimation Storyboard.TargetName="PopupTransform"
                              Storyboard.TargetProperty="ScaleX"
-                             From="0" To="1" Duration="0:0:0.2">
+                             From="0.8" To="1" Duration="0:0:0.3">
                 <DoubleAnimation.EasingFunction>
-                    <CubicEase EasingMode="EaseOut" />
+                    <BackEase EasingMode="EaseOut" Amplitude="0.5" />
                 </DoubleAnimation.EasingFunction>
             </DoubleAnimation>
             <DoubleAnimation Storyboard.TargetName="PopupGrid"
@@ -91,6 +91,9 @@
                             <Button.Template>
                                 <ControlTemplate TargetType="Button">
                                     <Border Background="{TemplateBinding Background}" CornerRadius="25" BorderThickness="0">
+                                        <Border.Effect>
+                                            <DropShadowEffect Color="Black" Direction="270" ShadowDepth="2" BlurRadius="5" Opacity="0.5" />
+                                        </Border.Effect>
                                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                                     </Border>
                                 </ControlTemplate>
@@ -117,7 +120,10 @@
                 </TransformGroup>
             </Grid.RenderTransform>
 
-            <Border CornerRadius="15" Background="Transparent" BorderBrush="#55FFFFFF" BorderThickness="1" Padding="10">
+            <Border CornerRadius="15" Background="#2C2C2C" BorderBrush="#55FFFFFF" BorderThickness="1" Padding="10">
+                <Border.Effect>
+                    <DropShadowEffect Color="Black" Direction="270" ShadowDepth="5" BlurRadius="15" Opacity="0.6" />
+                </Border.Effect>
                 <StackPanel>
                     <TextBlock x:Name="PopupTitle" Text="Apps" Foreground="White" FontWeight="Bold" Margin="0,0,0,10" HorizontalAlignment="Center"/>
                     <ItemsControl x:Name="PopupItemsControl">
@@ -133,7 +139,10 @@
                                     <Button.Template>
                                         <ControlTemplate TargetType="Button">
                                             <Border Background="{TemplateBinding Background}" CornerRadius="5">
-                                                <ContentPresenter HorizontalAlignment="Left" VerticalAlignment="Center" Margin="5"/>
+                                                <StackPanel Orientation="Horizontal" Margin="5">
+                                                    <Image Source="{Binding IconSource}" Width="24" Height="24" Margin="0,0,10,0"/>
+                                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center" Foreground="White"/>
+                                                </StackPanel>
                                             </Border>
                                         </ControlTemplate>
                                     </Button.Template>

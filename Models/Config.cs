@@ -40,5 +40,11 @@ namespace TaskbarOverlay.Models
 
         [JsonPropertyName("path")]
         public string Path { get; set; } = string.Empty;
+
+        [JsonPropertyName("launch_count")]
+        public int LaunchCount { get; set; } = 0;
+
+        [JsonIgnore]
+        public System.Windows.Media.ImageSource? IconSource { get; set; }
     }
 }
