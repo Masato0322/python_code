@@ -1,0 +1,39 @@
+{
+  "layout": {
+    "left_margin": 200,
+    "right_margin": 300,
+    "height": 64
+  },
+  "groups": [
+    {
+      "name": "Dev",
+      "apps": [
+        {
+          "name": "VSCode",
+          "path": "code"
+        },
+        {
+          "name": "Chrome",
+          "path": "chrome"
+        },
+        {
+          "name": "Slack",
+          "path": "slack"
+        }
+      ]
+    },
+    {
+      "name": "Work",
+      "apps": [
+        {
+          "name": "Excel",
+          "path": "excel"
+        },
+        {
+          "name": "Word",
+          "path": "winword"
+        }
+      ]
+    }
+  ]
+}
