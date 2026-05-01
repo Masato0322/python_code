@@ -82,47 +82,42 @@ namespace TaskbarOverlay
             }
         }
 
+        private string ResolveFullPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+
+            string fullPath = path;
+            if (!Path.IsPathRooted(path) && !File.Exists(path))
+            {
+                var values = Environment.GetEnvironmentVariable("PATH");
+                if (values != null)
+                {
+                    foreach (var pathDir in values.Split(Path.PathSeparator))
+                    {
+                        var testPath = Path.Combine(pathDir, path);
+                        if (File.Exists(testPath)) return testPath;
+                        if (File.Exists(testPath + ".exe")) return testPath + ".exe";
+                    }
+                }
+            }
+            return fullPath;
+        }
+
         private ImageSource? ExtractIconFromPath(string path)
         {
             try
             {
-                if (!string.IsNullOrEmpty(path))
+                string fullPath = ResolveFullPath(path);
+                if (File.Exists(fullPath))
                 {
-                    // Fallback to searching in PATH if not a full path
-                    string fullPath = path;
-                    if (!Path.IsPathRooted(path) && !File.Exists(path))
+                    using (var sysIcon = System.Drawing.Icon.ExtractAssociatedIcon(fullPath))
                     {
-                        var values = Environment.GetEnvironmentVariable("PATH");
-                        if (values != null)
+                        if (sysIcon != null)
                         {
-                            foreach (var pathDir in values.Split(Path.PathSeparator))
-                            {
-                                var testPath = Path.Combine(pathDir, path);
-                                if (File.Exists(testPath))
-                                {
-                                    fullPath = testPath;
-                                    break;
-                                }
-                                if (File.Exists(testPath + ".exe"))
-                                {
-                                    fullPath = testPath + ".exe";
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    if (File.Exists(fullPath))
-                    {
-                        using (var sysIcon = System.Drawing.Icon.ExtractAssociatedIcon(fullPath))
-                        {
-                            if (sysIcon != null)
-                            {
-                                return Imaging.CreateBitmapSourceFromHIcon(
-                                    sysIcon.Handle,
-                                    Int32Rect.Empty,
-                                    BitmapSizeOptions.FromEmptyOptions());
-                            }
+                            return Imaging.CreateBitmapSourceFromHIcon(
+                                sysIcon.Handle,
+                                Int32Rect.Empty,
+                                BitmapSizeOptions.FromEmptyOptions());
                         }
                     }
                 }
@@ -229,6 +224,61 @@ namespace TaskbarOverlay
                 catch (Exception ex)
                 {
                     MessageBox.Show($"Failed to launch {app.Name}: {ex.Message}");
+                }
+                finally
+                {
+                    HidePopup();
+                }
+            }
+        }
+
+        private void RunAsAdmin_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem menuItem && menuItem.DataContext is AppConfig app)
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = app.Path,
+                        UseShellExecute = true,
+                        Verb = "runas" // Request admin privileges
+                    });
+
+                    app.LaunchCount++;
+                    SaveConfig();
+                }
+                catch (Exception ex)
+                {
+                    // User might cancel UAC prompt, which throws an exception. Safely ignore or log.
+                    Debug.WriteLine($"Failed to launch as Admin {app.Name}: {ex.Message}");
+                }
+                finally
+                {
+                    HidePopup();
+                }
+            }
+        }
+
+        private void OpenFileLocation_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is MenuItem menuItem && menuItem.DataContext is AppConfig app)
+            {
+                try
+                {
+                    string fullPath = ResolveFullPath(app.Path);
+                    if (File.Exists(fullPath))
+                    {
+                        Process.Start("explorer.exe", $"/select,\"{fullPath}\"");
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Could not resolve file location for {app.Name}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Failed to open file location for {app.Name}: {ex.Message}");
                 }
                 finally
                 {
