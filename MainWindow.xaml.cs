@@ -8,6 +8,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Animation;
+using System.Windows.Threading;
 using TaskbarOverlay.Models;
 using TaskbarOverlay.Interop;
 using System.Diagnostics;
@@ -28,9 +29,43 @@ namespace TaskbarOverlay
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged += SystemEvents_DisplaySettingsChanged;
         }
 
+        private DispatcherTimer _resizeTimer;
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            HwndSource source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+            source?.AddHook(WndProc);
+
+            _resizeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            _resizeTimer.Tick += (s, args) =>
+            {
+                _resizeTimer.Stop();
+                PositionWindow();
+            };
+        }
+
+        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            if (msg == NativeMethods.WM_DPICHANGED || msg == NativeMethods.WM_DISPLAYCHANGE)
+            {
+                // Debounce layout updates
+                if (_resizeTimer != null)
+                {
+                    _resizeTimer.Stop();
+                    _resizeTimer.Start();
+                }
+            }
+            return IntPtr.Zero;
+        }
+
         private void SystemEvents_DisplaySettingsChanged(object? sender, EventArgs e)
         {
-            PositionWindow();
+            if (_resizeTimer != null)
+            {
+                _resizeTimer.Stop();
+                _resizeTimer.Start();
+            }
         }
 
         protected override void OnClosed(EventArgs e)
@@ -87,14 +122,39 @@ namespace TaskbarOverlay
             if (string.IsNullOrEmpty(path)) return path;
 
             string fullPath = path;
-            if (!Path.IsPathRooted(path) && !File.Exists(path))
+
+            // Resolve .lnk shortcut if necessary
+            if (path.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) && File.Exists(path))
+            {
+                try
+                {
+                    NativeMethods.IShellLinkW link = (NativeMethods.IShellLinkW)new NativeMethods.ShellLink();
+                    System.Runtime.InteropServices.ComTypes.IPersistFile file = (System.Runtime.InteropServices.ComTypes.IPersistFile)link;
+                    file.Load(path, 0);
+                    System.Text.StringBuilder sb = new System.Text.StringBuilder(260);
+                    NativeMethods.WIN32_FIND_DATAW w32fd;
+                    link.GetPath(sb, sb.Capacity, out w32fd, 0);
+
+                    if (sb.Length > 0)
+                    {
+                        fullPath = sb.ToString();
+                        return fullPath;
+                    }
+                }
+                catch
+                {
+                    // Fallback to original path if resolution fails
+                }
+            }
+
+            if (!Path.IsPathRooted(fullPath) && !File.Exists(fullPath))
             {
                 var values = Environment.GetEnvironmentVariable("PATH");
                 if (values != null)
                 {
                     foreach (var pathDir in values.Split(Path.PathSeparator))
                     {
-                        var testPath = Path.Combine(pathDir, path);
+                        var testPath = Path.Combine(pathDir, fullPath);
                         if (File.Exists(testPath)) return testPath;
                         if (File.Exists(testPath + ".exe")) return testPath + ".exe";
                     }
@@ -114,10 +174,12 @@ namespace TaskbarOverlay
                     {
                         if (sysIcon != null)
                         {
-                            return Imaging.CreateBitmapSourceFromHIcon(
+                            var img = Imaging.CreateBitmapSourceFromHIcon(
                                 sysIcon.Handle,
                                 Int32Rect.Empty,
                                 BitmapSizeOptions.FromEmptyOptions());
+                            img.Freeze(); // Optimize memory
+                            return img;
                         }
                     }
                 }
@@ -136,7 +198,10 @@ namespace TaskbarOverlay
 
         private void PositionWindow()
         {
-            IntPtr taskbarHWnd = NativeMethods.FindWindow("Shell_TrayWnd", null);
+            // Use SHAppBarMessage for robust taskbar state detection
+            NativeMethods.APPBARDATA abd = new NativeMethods.APPBARDATA();
+            abd.cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf(abd);
+            NativeMethods.SHAppBarMessage(NativeMethods.ABM_GETTASKBARPOS, ref abd);
 
             // Get DPI scaling factors
             double dpiX = 1.0;
@@ -148,36 +213,68 @@ namespace TaskbarOverlay
                 dpiY = source.CompositionTarget.TransformFromDevice.M22;
             }
 
-            if (taskbarHWnd != IntPtr.Zero)
+            // Apply DPI scaling to physical coordinates
+            double taskbarLeft = abd.rc.Left * dpiX;
+            double taskbarTop = abd.rc.Top * dpiY;
+            double taskbarWidth = (abd.rc.Right - abd.rc.Left) * dpiX;
+            double taskbarHeight = (abd.rc.Bottom - abd.rc.Top) * dpiY;
+
+            double screenWidth = SystemParameters.PrimaryScreenWidth;
+            double screenHeight = SystemParameters.PrimaryScreenHeight;
+            double popupHeightAllowance = 400;
+
+            // Calculate layout depending on which edge the taskbar is on
+            if (abd.uEdge == NativeMethods.ABE_TOP)
             {
-                if (NativeMethods.GetWindowRect(taskbarHWnd, out NativeMethods.RECT rect))
-                {
-                    // Apply DPI scaling to physical coordinates
-                    double taskbarTop = rect.Top * dpiY;
-                    double taskbarHeight = (rect.Bottom - rect.Top) * dpiY;
-
-                    // Full window covers the taskbar area up to the screen width, minus margins
-                    double screenWidth = SystemParameters.PrimaryScreenWidth;
-
-                    // We need enough height to show the popup above the taskbar
-                    double popupHeightAllowance = 400; // Arbitrary allowance for popup
-
-                    this.Left = _config.Layout.LeftMargin;
-                    this.Width = screenWidth - _config.Layout.LeftMargin - _config.Layout.RightMargin;
-                    this.Top = taskbarTop - popupHeightAllowance;
-                    this.Height = taskbarHeight + popupHeightAllowance;
-
-                    // Adjust popup margin so it sits exactly above the taskbar height
-                    PopupGrid.Margin = new Thickness(0, 0, 0, taskbarHeight + 5);
-                }
-            }
-            else
-            {
-                // Fallback positioning if taskbar not found
                 this.Left = _config.Layout.LeftMargin;
-                this.Width = SystemParameters.PrimaryScreenWidth - _config.Layout.LeftMargin - _config.Layout.RightMargin;
-                this.Top = SystemParameters.PrimaryScreenHeight - _config.Layout.Height - 400;
-                this.Height = _config.Layout.Height + 400;
+                this.Width = screenWidth - _config.Layout.LeftMargin - _config.Layout.RightMargin;
+                this.Top = taskbarTop;
+                this.Height = taskbarHeight + popupHeightAllowance;
+
+                TaskbarPanel.VerticalAlignment = VerticalAlignment.Top;
+                PopupGrid.VerticalAlignment = VerticalAlignment.Top;
+                PopupGrid.Margin = new Thickness(0, taskbarHeight + 5, 0, 0);
+            }
+            else if (abd.uEdge == NativeMethods.ABE_LEFT)
+            {
+                // Vertical layout
+                this.Left = taskbarLeft;
+                this.Top = 0;
+                this.Width = taskbarWidth + popupHeightAllowance;
+                this.Height = screenHeight;
+
+                TaskbarPanel.VerticalAlignment = VerticalAlignment.Center;
+                TaskbarPanel.HorizontalAlignment = HorizontalAlignment.Left;
+                PopupGrid.VerticalAlignment = VerticalAlignment.Center;
+                PopupGrid.HorizontalAlignment = HorizontalAlignment.Left;
+                PopupGrid.Margin = new Thickness(taskbarWidth + 5, 0, 0, 0);
+            }
+            else if (abd.uEdge == NativeMethods.ABE_RIGHT)
+            {
+                // Vertical layout
+                this.Left = taskbarLeft - popupHeightAllowance;
+                this.Top = 0;
+                this.Width = taskbarWidth + popupHeightAllowance;
+                this.Height = screenHeight;
+
+                TaskbarPanel.VerticalAlignment = VerticalAlignment.Center;
+                TaskbarPanel.HorizontalAlignment = HorizontalAlignment.Right;
+                PopupGrid.VerticalAlignment = VerticalAlignment.Center;
+                PopupGrid.HorizontalAlignment = HorizontalAlignment.Right;
+                PopupGrid.Margin = new Thickness(0, 0, taskbarWidth + 5, 0);
+            }
+            else // Default to BOTTOM
+            {
+                this.Left = _config.Layout.LeftMargin;
+                this.Width = screenWidth - _config.Layout.LeftMargin - _config.Layout.RightMargin;
+                this.Top = taskbarTop - popupHeightAllowance;
+                this.Height = taskbarHeight + popupHeightAllowance;
+
+                TaskbarPanel.VerticalAlignment = VerticalAlignment.Bottom;
+                TaskbarPanel.HorizontalAlignment = HorizontalAlignment.Center;
+                PopupGrid.VerticalAlignment = VerticalAlignment.Bottom;
+                PopupGrid.HorizontalAlignment = HorizontalAlignment.Center;
+                PopupGrid.Margin = new Thickness(0, 0, 0, taskbarHeight + 5);
             }
         }
 
@@ -205,16 +302,20 @@ namespace TaskbarOverlay
             }
         }
 
-        private void AppButton_Click(object sender, RoutedEventArgs e)
+        private async void AppButton_Click(object sender, RoutedEventArgs e)
         {
             if (sender is Button button && button.DataContext is AppConfig app)
             {
+                HidePopup();
                 try
                 {
-                    Process.Start(new ProcessStartInfo
+                    await System.Threading.Tasks.Task.Run(() =>
                     {
-                        FileName = app.Path,
-                        UseShellExecute = true
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = app.Path,
+                            UseShellExecute = true
+                        });
                     });
 
                     // Increment LaunchCount and save config
@@ -225,24 +326,24 @@ namespace TaskbarOverlay
                 {
                     MessageBox.Show($"Failed to launch {app.Name}: {ex.Message}");
                 }
-                finally
-                {
-                    HidePopup();
-                }
             }
         }
 
-        private void RunAsAdmin_Click(object sender, RoutedEventArgs e)
+        private async void RunAsAdmin_Click(object sender, RoutedEventArgs e)
         {
             if (sender is MenuItem menuItem && menuItem.DataContext is AppConfig app)
             {
+                HidePopup();
                 try
                 {
-                    Process.Start(new ProcessStartInfo
+                    await System.Threading.Tasks.Task.Run(() =>
                     {
-                        FileName = app.Path,
-                        UseShellExecute = true,
-                        Verb = "runas" // Request admin privileges
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = app.Path,
+                            UseShellExecute = true,
+                            Verb = "runas" // Request admin privileges
+                        });
                     });
 
                     app.LaunchCount++;
@@ -252,10 +353,6 @@ namespace TaskbarOverlay
                 {
                     // User might cancel UAC prompt, which throws an exception. Safely ignore or log.
                     Debug.WriteLine($"Failed to launch as Admin {app.Name}: {ex.Message}");
-                }
-                finally
-                {
-                    HidePopup();
                 }
             }
         }
@@ -293,7 +390,11 @@ namespace TaskbarOverlay
             {
                 var options = new JsonSerializerOptions { WriteIndented = true };
                 string json = JsonSerializer.Serialize(_config, options);
-                File.WriteAllText("config.json", json);
+
+                // Atomic save
+                string tempFile = "config.json.tmp";
+                File.WriteAllText(tempFile, json);
+                File.Move(tempFile, "config.json", true);
             }
             catch (Exception ex)
             {
@@ -345,31 +446,36 @@ namespace TaskbarOverlay
             if (_isDragging)
             {
                 Point currentPoint = e.GetPosition(this);
-                double offsetX = currentPoint.X - _dragStartPoint.X;
 
-                // Calculate new margins based on dragging
-                Thickness currentMargin = TaskbarPanel.Margin;
-                double newLeft = currentMargin.Left + offsetX;
-                double newRight = currentMargin.Right - offsetX;
-
-                // Max margin logic to prevent moving off window
-                // Allow movement but restrict so it does not exceed the container width bounds
-                double maxMargin = this.Width / 2 - TaskbarPanel.ActualWidth / 2;
-
-                if (newLeft > maxMargin)
+                // Handle horizontal vs vertical dragging based on alignment
+                if (TaskbarPanel.VerticalAlignment == VerticalAlignment.Top || TaskbarPanel.VerticalAlignment == VerticalAlignment.Bottom)
                 {
-                    newLeft = maxMargin;
-                    newRight = -maxMargin;
+                    double offsetX = currentPoint.X - _dragStartPoint.X;
+                    Thickness currentMargin = TaskbarPanel.Margin;
+                    double newLeft = currentMargin.Left + offsetX;
+                    double newRight = currentMargin.Right - offsetX;
+
+                    double maxMargin = this.Width / 2 - TaskbarPanel.ActualWidth / 2;
+                    if (newLeft > maxMargin) { newLeft = maxMargin; newRight = -maxMargin; }
+                    else if (newLeft < -maxMargin) { newLeft = -maxMargin; newRight = maxMargin; }
+
+                    TaskbarPanel.Margin = new Thickness(newLeft, currentMargin.Top, newRight, currentMargin.Bottom);
                 }
-                else if (newLeft < -maxMargin)
+                else
                 {
-                    newLeft = -maxMargin;
-                    newRight = maxMargin;
+                    double offsetY = currentPoint.Y - _dragStartPoint.Y;
+                    Thickness currentMargin = TaskbarPanel.Margin;
+                    double newTop = currentMargin.Top + offsetY;
+                    double newBottom = currentMargin.Bottom - offsetY;
+
+                    double maxMargin = this.Height / 2 - TaskbarPanel.ActualHeight / 2;
+                    if (newTop > maxMargin) { newTop = maxMargin; newBottom = -maxMargin; }
+                    else if (newTop < -maxMargin) { newTop = -maxMargin; newBottom = maxMargin; }
+
+                    TaskbarPanel.Margin = new Thickness(currentMargin.Left, newTop, currentMargin.Right, newBottom);
                 }
 
-                TaskbarPanel.Margin = new Thickness(newLeft, currentMargin.Top, newRight, currentMargin.Bottom);
-
-                _dragStartPoint = currentPoint; // Reset start point for incremental dragging
+                _dragStartPoint = currentPoint;
             }
         }
 
